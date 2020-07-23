@@ -1,6 +1,7 @@
 import os, sys
 import random
 import numpy as np
+import json
 from functools import reduce
 
 class InstanceLoader(object):
@@ -38,7 +39,20 @@ class InstanceLoader(object):
         #end
     #end
 
-    def create_batch(instances):
+    def get_new_instances(self):
+        print(self.filenames[self.index])
+        Ma,chrom_number = read_graph(self.filenames[self.index], True)
+        f = self.filenames[self.index]
+    
+        yield Ma, chrom_number, f
+
+        if self.index + 1 < len(self.filenames):
+            self.index += 1
+        else:
+            self.reset()
+    #end
+
+    def create_batch(instances, newset=False):
 
         # n_instances: number of instances
         n_instances = len(instances)
@@ -63,7 +77,10 @@ class InstanceLoader(object):
         MC = np.zeros((total_vertices, total_colors))        
 
         # Even index instances are SAT, odd are UNSAT
-        cn_exists = np.array([ 1-(i%2) for i in range(n_instances) ])
+        if newset==False:
+            cn_exists = np.array([ 1-(i%2) for i in range(n_instances) ])
+        else:
+            cn_exists = np.array([ 1 for i in range(n_instances) ])
 
         for (i,(Ma,chrom_number,f)) in enumerate(instances):
             # Get the number of vertices (n) and edges (m) in this graph
@@ -88,6 +105,7 @@ class InstanceLoader(object):
         return M, n_colors, MC, cn_exists, n_vertices, n_edges, f
     #end
 
+
     def get_batches(self, batch_size):
         for i in range( len(self.filenames) // batch_size ):
             instances = list(self.get_instances(batch_size))
@@ -102,15 +120,22 @@ class InstanceLoader(object):
         #end
     #end
 
+    def get_new_test_batches(self):
+        for i in range( len(self.filenames) ):
+            instances = list(self.get_new_instances())
+            yield InstanceLoader.create_batch(instances, True)
+
     def reset(self):
         random.shuffle(self.filenames)
         self.index = 0
     #end
 #end
 
-def read_graph(filepath):
-    with open(filepath,"r") as f:
+def read_graph(filepath, newset=False):
+    f = open(filepath,"r")
 
+    # Select original/other dataset
+    if newset==False:
         line = ''
 
         # Parse number of vertices
@@ -134,7 +159,46 @@ def read_graph(filepath):
         # Parse target cost
         while 'CHROM_NUMBER' not in line: line = f.readline();
         chrom_number = int(f.readline().strip())
+        return Ma,chrom_number,diff_edge
+    else:
+        chrom_number = Ma = None
 
-    #end
-    return Ma,chrom_number,diff_edge
+        # read DIMACS format graph
+        if not filepath[-4:] == '.json':
+            for line in f:
+                # skip comments & blank lines
+                if line.startswith('c') or not line.strip():
+                    continue
+                # read header
+                if line.startswith('p'):
+                    print(line)
+                    node_num = int(line.split()[2])
+                    edge_num = int(line.split()[3])
+                    Ma = np.zeros((node_num,node_num),dtype=int)
+                # read edges
+                if line.startswith('e'):
+                    flist = line.split()
+                    node_id = int(flist[1]) - 1
+                    neigh_id = int(flist[2]) - 1
+                    # ignore self-loop
+                    if not node_id == neigh_id:
+                        Ma[node_id, neigh_id] = 1
+                        Ma[neigh_id, node_id] = 1
+                # read chrom number
+                if line.startswith ('h'):
+                    chrom_number = int(line.split()[1])
+        # read layout format graph
+        else:
+            f = open(filepath,'r')
+            data = json.load(f)
+            Ma = np.zeros((len(data),len(data)),dtype=int)
+            for item in data:
+                node_id = int(item['id'])
+                for neighbor_item in item['conflict']:
+                    neig_id = int(neighbor_item['id'])
+                    Ma[node_id, neig_id] = Ma[neig_id, node_id] = 1
+        if chrom_number is None:
+            chrom_number = 10
+        return Ma, chrom_number
+        
 #end

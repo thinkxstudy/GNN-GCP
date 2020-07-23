@@ -9,7 +9,7 @@ def build_network(d):
 
     # Define hyperparameters
     d = d
-    learning_rate = 2e-5
+    learning_rate = 2e-4
     l2norm_scaling = 1e-10
     global_norm_gradient_clipping_ratio = 0.65
 
@@ -164,8 +164,10 @@ def build_network(d):
     grads, _ = tf.clip_by_global_norm(tf.gradients(GNN['loss'] + tf.multiply(vars_cost, l2norm_scaling),tf.trainable_variables()),global_norm_gradient_clipping_ratio)
     GNN['train_step'] = optimizer.apply_gradients(zip(grads, tf.trainable_variables()))
     
+    # Return embeddings
     GNN['C_n'] = C_n
-    
-    # Return GNN dictionary
+    GNN['V_n'] = V_n
+
+    # Return GNN dictionarys
     return GNN
 #end

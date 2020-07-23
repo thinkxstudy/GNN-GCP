@@ -12,6 +12,7 @@ from model import build_network
 from instance_loader import InstanceLoader
 from util import load_weights, save_weights
 from tabucol import tabucol, test
+from sklearn.cluster import KMeans
 
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 
@@ -76,10 +77,9 @@ def run_test_batch(sess, model, batch, batch_i, time_steps, logfile, runtabu=Tru
       n_acc = sum(n_vertices[0:i])
       c_acc = sum(n_colors[0:i])
       
-      
       #subset adjacency matrix
       M_t = M[n_acc:n_acc+n, n_acc:n_acc+n]
-      c = c if i % 2 == 0 else c + 1
+      # c = c if i % 2 == 0 else c + 1
       
       gnnpred = tabupred = 999
       for j in range(2, c + 5):
@@ -100,14 +100,29 @@ def run_test_batch(sess, model, batch, batch_i, time_steps, logfile, runtabu=Tru
             model['colors_initial_embeddings']: colors_initial_embeddings
         }
 
-        outputs = [model['loss'], model['acc'], model['predictions'], model['TP'], model['FP'], model['TN'], model['FN'] ]
+
+        outputs = [model['loss'], model['acc'], model['predictions'], model['TP'], model['FP'], model['TN'], model['FN'], model['V_n'] ]
+        
         
         # Run model - chromatic number or more
         init_time = timeit.default_timer()
-        loss, acc, predictions, TP, FP, TN, FN = sess.run(outputs, feed_dict = feed_dict)[-7:]
+        loss, acc, predictions, TP, FP, TN, FN, V_n  = sess.run(outputs, feed_dict = feed_dict)[-8:]
         elapsed_gnn_time  = timeit.default_timer() - init_time
-        gnnpred = n_colors_t if predictions > 0.5 and n_colors_t < gnnpred else gnnpred
-        
+   
+        if predictions.item() > 0.5 and n_colors_t < gnnpred:
+            gnnpred = n_colors_t
+            print("Predictions: ", predictions, gnnpred)
+            # k-means clustering
+            vemb = V_n
+            cost = 0
+            kmean = KMeans(n_clusters=gnnpred, random_state=0).fit(vemb)
+            klabel = kmean.labels_
+            for a in range(n):
+                for b in range(n):
+                    if M_t[a, b] == 1 and klabel[a] == klabel[b] and a != b:
+                        cost = cost + 1
+            #print('Instance: ', i, ' ', j,' ', m, ' Conflict: ', cost)
+
         # run tabucol
         if runtabu:
           init_time = timeit.default_timer()
@@ -116,9 +131,11 @@ def run_test_batch(sess, model, batch, batch_i, time_steps, logfile, runtabu=Tru
           tabu_sol = 0 if tabu_solution is None else 1
           tabupred = n_colors_t if tabu_sol == 1 and n_colors_t < tabupred else tabupred
       #end for
-      logfile.write('{batch_i} {i} {n} {m} {conn} {tstloss} {tstacc} {cn_exists} {c} {gnnpred} {prediction} {gnntime} {tabupred} {tabutime}\n'.format(
-        batch_i = batch_i,
-        i = i,
+      if gnnpred == 999:
+          cost = -1
+      logfile.write('{f} {conflict} {n} {m} {conn} {tstloss} {tstacc} {cn_exists} {c} {gnnpred} {prediction} {gnntime} {tabupred} {tabutime}\n'.format(
+        f = ''.join(f.split('//')[-1].split('.')[:-1]),
+        conflict = cost,
         n= n,
         m = m,
         c = c,
@@ -150,41 +167,25 @@ def summarize_epoch(epoch_i, loss, acc, sat, pred, train=False):
     )
 #end
 
-
-if __name__ == '__main__':
+# the original main function
+def run(d=64,
+    time_steps=32, 
+    epochs_n=10000, 
+    batch_size=8,
+    path='adversarial-training',
+    loadpath='.',
+    seed=42,
+    load_checkpoints=False,
+    save_checkpoints=False,
+    train=True,
+    runtabu=False,
+    newset=False):
     
-    # Define argument parser
-    parser = argparse.ArgumentParser(description='Process some integers.')
-    parser.add_argument('-d', default=64, type=int, help='Embedding size for vertices and edges')
-    parser.add_argument('-timesteps', default=32, type=int, help='# Timesteps')
-    parser.add_argument('-epochs', default=10000, type=int, help='Training epochs')
-    parser.add_argument('-batchsize', default=8, type=int, help='Batch size')
-    parser.add_argument('-path', default="adversarial-training", type=str, help='Path to instances')
-    parser.add_argument('-loadpath', default=".", type=str, help='Path to checkpoints to be loaded')
-    parser.add_argument('-seed', type=int, default=42, help='RNG seed for Python, Numpy and Tensorflow')
-    parser.add_argument('--load', const=True, default=False, action='store_const', help='Load model checkpoint?')
-    parser.add_argument('--save', const=True, default=False, action='store_const', help='Save model?')
-    parser.add_argument('--train', const=True, default=False, action='store_const', help='Train?')
-    parser.add_argument('--runtabu', const=True, default=False, action='store_const', help='Run tabucol?')
-
-    # Parse arguments from command line
-    args = parser.parse_args()
-
     # Set RNG seed for Python, Numpy and Tensorflow
-    random.seed(vars(args)['seed'])
-    np.random.seed(vars(args)['seed'])
-    tf.set_random_seed(vars(args)['seed'])
-    seed = str(vars(args)['seed'])
-    # Setup parameters
-    d                       = vars(args)['d']
-    time_steps              = vars(args)['timesteps']
-    epochs_n                = vars(args)['epochs']
-    batch_size              = vars(args)['batchsize']
-    path                    = vars(args)['path']
-    loadpath                = vars(args)['loadpath']
-    load_checkpoints        = vars(args)['load']
-    save_checkpoints        = vars(args)['save']
-    runtabu                 = vars(args)['runtabu']
+    random.seed(seed)
+    np.random.seed(seed)
+    tf.set_random_seed(seed)
+    seed = str(seed)
 
     train_params = {
         'batches_per_epoch': 128
@@ -195,7 +196,7 @@ if __name__ == '__main__':
     }
     
     # Create train and test loaders
-    if vars(args)['train']:
+    if train:
         train_loader = InstanceLoader(path)
     else:
         test_loader  = InstanceLoader(path)
@@ -218,7 +219,7 @@ if __name__ == '__main__':
         # Restore saved weights
         if load_checkpoints: load_weights(sess,loadpath);
         
-        if vars(args)['train']:
+        if train:
           ptrain = 'training_'+seed
           if not os.path.isdir(ptrain):
             os.makedirs(ptrain)
@@ -266,15 +267,60 @@ if __name__ == '__main__':
           with open('testing_'+seed+'/log.dat','w') as logfile:
              
             test_loader.reset()
-            logfile.write('batch instance vertices edges connectivity loss acc sat chrom_number gnnpred gnncertainty gnntime tabupred tabutime\n')
+            logfile.write('filename conflict vertices edges connectivity loss acc sat chrom_number gnnpred gnncertainty gnntime tabupred tabutime\n')
             print('Testing model...', flush=True)
-            for (batch_i, batch) in enumerate(test_loader.get_test_batches(1,2048)):
-                run_test_batch(sess, GNN, batch, batch_i, time_steps, logfile,runtabu)
+            if newset == False:
+                for (batch_i, batch) in enumerate(test_loader.get_test_batches(1,2048)):
+                    run_test_batch(sess, GNN, batch, batch_i, time_steps, logfile,runtabu)
+            else:
+                for (batch_i, batch) in enumerate(test_loader.get_new_test_batches()):
+                    run_test_batch(sess, GNN, batch, batch_i, time_steps, logfile,runtabu)
+
             #end
             logfile.flush()
                   
     #end
 #end
+
+
+
+
+if __name__ == '__main__':
+    
+    # Define argument parser
+    parser = argparse.ArgumentParser(description='Process some integers.')
+    parser.add_argument('-d', default=64, type=int, help='Embedding size for vertices and edges')
+    parser.add_argument('-timesteps', default=32, type=int, help='# Timesteps')
+    parser.add_argument('-epochs', default=10000, type=int, help='Training epochs')
+    parser.add_argument('-batchsize', default=8, type=int, help='Batch size')
+    parser.add_argument('-path', default="adversarial-training", type=str, help='Path to instances')
+    parser.add_argument('-loadpath', default=".", type=str, help='Path to checkpoints to be loaded')
+    parser.add_argument('-seed', type=int, default=42, help='RNG seed for Python, Numpy and Tensorflow')
+    parser.add_argument('--load', const=True, default=False, action='store_const', help='Load model checkpoint?')
+    parser.add_argument('--save', const=True, default=False, action='store_const', help='Save model?')
+    parser.add_argument('--train', const=True, default=False, action='store_const', help='Train?')
+    parser.add_argument('--runtabu', const=True, default=False, action='store_const', help='Run tabucol?')
+    parser.add_argument('--newset', default=False, action='store_true', help='Test on COLOR and Layout dataset')
+
+    # Parse arguments from command line
+    args = parser.parse_args()
+
+    # Setup parameters
+    d                       = vars(args)['d']
+    time_steps              = vars(args)['timesteps']
+    epochs_n                = vars(args)['epochs']
+    batch_size              = vars(args)['batchsize']
+    path                    = vars(args)['path']
+    loadpath                = vars(args)['loadpath']
+    load_checkpoints        = vars(args)['load']
+    seed                    = vars(args)['seed']
+    save_checkpoints        = vars(args)['save']
+    train                   = vars(args)['train']
+    runtabu                 = vars(args)['runtabu']
+    newset                  = vars(args)['newset']
+
+    run(d, time_steps, epochs_n, batch_size, path, loadpath, seed, load_checkpoints,
+    save_checkpoints, train, runtabu, newset)
 
 
 
